@@ -12,7 +12,7 @@ does not change; only the installed **unit** renames.
 
 | State | What works | What to do |
 | --- | --- | --- |
-| **Neither installed** | The resolved-path fallbacks in every routed doc (`wt` by path, the hand-run epic pair, the manual currency loop) carry the whole flow | Install skt when ready; nothing is broken meanwhile |
+| **Neither installed** | The resolved-path fallbacks in every routed doc (`wt` by path, the hand-run epic pair, the manual currency loop) carry the whole flow | Install skt when ready; nothing is broken meanwhile. Reaching a fallback from a home that *does* have skt is a different thing — see *The rule the routed docs follow* below |
 | **Legacy `skill-publisher` only** | Same as above; the legacy skill still answers authoring questions | `skill-manager remove skill-publisher`, then install skt (below) |
 | **Both installed** | Everything works; no trigger collision (the authoring description lives on the contained `unit-authoring` skill, not on a competitor to skt) | Remove the legacy unit at leisure — it is dead weight, not a hazard |
 | **skt only** (target) | Startup disclosure, notifications, `skt ticket`/`publish`, plus `unit-authoring` for authoring | — |
@@ -56,6 +56,41 @@ Every doc that leads with an skt command keeps its resolved-path or
 hand-run fallback **verbatim**. A home without skt is a supported state,
 not a broken one — the eval suite's migration matrix (W4) holds the docs
 to that.
+
+**And every such fallback states what its own use implies.** The rule
+above is what makes the fallbacks universal; it is also what makes them
+silent, because a fallback that works absorbs the defect that sent you
+there. Four eval runs replayed `wt`/`bootstrap-home.sh` by hand with a
+working `skt` on PATH the whole time — four different root causes, one
+indistinguishable outcome: a plausible result, no complaint, four tool
+calls where one would have done. So the fallback rule has a second half,
+and a routed doc satisfies the rule only with both:
+
+1. **Say how to tell.** skt is a **plugin**, so it is never under a
+   home's `skills/` — listing that directory reports it absent from a
+   home that has it. The one test is by path:
+
+   ```bash
+   test -x "${SKILL_MANAGER_HOME:-$HOME/.skill-manager}/bin/cli/skt"
+   ```
+
+2. **Say that reaching the fallback anyway is a finding.** Not present
+   is a fact about the home and needs no report. Not *found* is a
+   front-door defect, and there are exactly four:
+
+   - installed but not on `PATH`;
+   - looked for where a plugin never is (`skills/`);
+   - found and it **failed** — quote its `error:` line verbatim;
+   - found and could not read the home it pointed at.
+
+   The doc says where the line goes (the PR body, or to the user where
+   there is no PR) and which skill owns the door — `skt` for the plugin,
+   `git-issue-workflow` for `wt`, `git-epic-workflow` for the
+   declared-path epic route.
+
+Adding a fallback without part 2 is how this issue gets refiled. Landed
+first in git-issue-workflow (#29) and mirrored into git-epic-workflow and
+git-integration-repo; the wording there is the reference.
 
 ## Migrating an existing project home (the measured sequence)
 
