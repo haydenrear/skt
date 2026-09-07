@@ -172,11 +172,26 @@ def epic_new(ticket_id: str, base: str | None, path: str) -> int:
         print("fix:   commit or stash, then re-run")
         return 1
     base_ref = base or "HEAD"
+    # EXISTENCE IS CHECKED EXPLICITLY. `git rev-parse` echoes a full 40-char
+    # hex string back and exits 0 WITHOUT looking for the object, so a missing
+    # commit only surfaced on the `^{tree}` lookup below -- and the remedy
+    # printed for it named `git fetch origin`, which a repository with no
+    # origin cannot do. Found by an eval: an agent followed that advice
+    # exactly and got nowhere, then spent seven calls working out why.
+    if git("cat-file", "-e", f"{base_ref}^{{commit}}").returncode != 0:
+        has_origin = git("remote", "get-url", "origin").returncode == 0
+        print(f"error: cannot resolve base {base_ref!r} in this repository")
+        if has_origin:
+            print("fix:   git fetch origin, then pass --base <existing-ref>")
+        else:
+            print("fix:   this repository has no 'origin' to fetch from — pass a ref")
+            print("       that exists here: --base HEAD, a branch name, or a tag")
+        return 1
     commit = git("rev-parse", base_ref)
     tree = git("rev-parse", f"{base_ref}^{{tree}}")
     if commit.returncode != 0 or tree.returncode != 0:
-        print(f"error: cannot resolve base {base_ref!r}")
-        print("fix:   git fetch origin, then pass --base <existing-ref>")
+        print(f"error: cannot resolve base {base_ref!r} to a commit and tree")
+        print("fix:   pass a ref that names a commit — a branch, a tag, or a sha")
         return 1
     commit_oid, tree_oid = commit.stdout.strip(), tree.stdout.strip()
     toplevel = git("rev-parse", "--show-toplevel").stdout.strip()

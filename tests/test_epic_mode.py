@@ -202,3 +202,31 @@ def test_unknown_base_refused(tmp_path, capsys):
     repo = epic_repo(tmp_path)
     assert run_epic_new(repo, "11-slug", tmp_path / "wt-11", base="epic/ghost") == 1
     assert "cannot resolve base" in capsys.readouterr().out
+
+
+def test_missing_sha_is_refused_not_echoed_back(tmp_path, capsys):
+    """`git rev-parse` echoes a full 40-char sha back and exits 0 without
+    looking for the object. Before the existence check, a sha for a commit
+    this repository does not have got past the first gate and failed on the
+    tree lookup instead."""
+    repo = epic_repo(tmp_path)
+    ghost = "a" * 40
+    assert run_epic_new(repo, "12-slug", tmp_path / "wt-12", base=ghost) == 1
+    assert "cannot resolve base" in capsys.readouterr().out
+
+
+def test_remedy_does_not_name_a_fetch_the_repo_cannot_do(tmp_path, capsys):
+    """THE EVAL FINDING. An agent was told `git fetch origin` by a repository
+    that has no origin, followed the advice exactly, and got nowhere -- then
+    spent seven calls diagnosing it. A remedy that cannot be carried out is
+    worse than no remedy: it is confidently wrong."""
+    repo = epic_repo(tmp_path)
+    assert subprocess.run(["git", "remote", "get-url", "origin"], cwd=repo,
+                          capture_output=True).returncode != 0, (
+        "this fixture must have NO origin, or the case proves nothing")
+
+    assert run_epic_new(repo, "13-slug", tmp_path / "wt-13", base="a" * 40) == 1
+    out = capsys.readouterr().out
+    assert "no 'origin' to fetch from" in out, out
+    assert "git fetch origin" not in out, (
+        "the unfollowable remedy came back: " + out)
