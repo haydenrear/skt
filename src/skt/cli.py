@@ -172,7 +172,103 @@ def _import_sibling(name: str):
     return importlib.import_module(f"skt.{name}")
 
 
+
+# The shape of each ticket verb, keyed by verb. `skt ticket new --help` is what
+# an agent reaches for when it wants to know what `new` takes; argparse answers
+# a flat `ticket` parser there, listing every flag of all five verbs with
+# "list/sweep:" and "epic mode:" prefixes scattered through them. Measured in
+# the epic-provisioning eval: the agent asked, got the wall, and guessed anyway.
+#
+# Intercepted rather than modelled as nested subparsers on purpose. Nesting
+# would fix the help and break call shapes that work today -- `skt ticket
+# --epic X list` puts the flag before the verb, and a subparser cannot see a
+# flag that belongs to its parent.
+TICKET_VERB_HELP = {
+    "new": (
+        "usage: skt ticket new <ticket> [--base <ref>] [--path <dir>]\n"
+        "\n"
+        "Create the worktree AND its own Skill Manager home, in one command,\n"
+        "rolled back together if the bootstrap fails.\n"
+        "\n"
+        "  <ticket>        the ticket id; the branch becomes feature/<ticket>\n"
+        "  --base <ref>    commit or ref to branch from. Resolve it FIRST and\n"
+        "                  pass the SHA in epic mode -- a bare epic/<slug>\n"
+        "                  names the local ref, which a server-side merge does\n"
+        "                  not move. Must exist here; skt refuses rather than\n"
+        "                  guessing.\n"
+        "  --path <dir>    epic mode: put the worktree at this DECLARED path\n"
+        "                  (assignments name it) instead of wt's derived one\n"
+        "\n"
+        "examples:\n"
+        "  skt ticket new OUN-6\n"
+        "  skt ticket new OUN-6 --base HEAD --path ../wt-oun-6\n"
+    ),
+    "close": (
+        "usage: skt ticket close <ticket>\n"
+        "\n"
+        "Tear the worktree down through the close-out gate, which REFUSES\n"
+        "while removing it would destroy unpublished skill work. Resolves the\n"
+        "worktree by SEARCH, so a hand-made path is found too.\n"
+        "\n"
+        "  <ticket>        the ticket id\n"
+        "\n"
+        "exit 0 is the only code that means the worktree is gone.\n"
+    ),
+    "info": (
+        "usage: skt ticket info <ticket>\n"
+        "\n"
+        "Print WORKTREE / BRANCH / BASE / LAUNCH / CLOSE for one ticket\n"
+        "without changing anything.\n"
+    ),
+    "list": (
+        "usage: skt ticket list [--epic <slug>] [--target <ref>] [--json]\n"
+        "\n"
+        "Every ticket worktree of this repository, with what each still holds.\n"
+        "\n"
+        "  --epic <slug>   limit to one epic's worktrees, by the slug in its\n"
+        "                  epic/<slug> branch. Discovered from the repository\n"
+        "                  when there is exactly one epic branch.\n"
+        "  --target <ref>  the ref a ticket's commits must be contained in\n"
+        "                  (default: the resolved epic branch)\n"
+        "  --json          machine-readable output\n"
+    ),
+    "sweep": (
+        "usage: skt ticket sweep [--epic <slug>] [--into <home>] [-y] [--json]\n"
+        "\n"
+        "Retire an epic's worktrees in one gated pass. WITHOUT -y this is a\n"
+        "DRY RUN: it prints the plan and changes nothing.\n"
+        "\n"
+        "  --epic <slug>   limit to one epic's worktrees\n"
+        "  --into <home>   destination home for the `home close-out` gate\n"
+        "                  (default: the MAIN working tree's .skill-manager)\n"
+        "  -y, --yes       actually remove\n"
+        "  --json          machine-readable output\n"
+    ),
+}
+
+
+def _ticket_verb_help(argv: list[str]) -> str | None:
+    """The per-verb help text for `skt ticket <verb> --help`, or None.
+
+    Only when a verb is present AND help is asked for. `skt ticket --help`
+    still reaches argparse and prints the overview with all five verbs, which
+    is the right answer to the question it asks.
+    """
+    if len(argv) < 2 or argv[0] != "ticket":
+        return None
+    if not any(a in ("-h", "--help") for a in argv[1:]):
+        return None
+    for arg in argv[1:]:
+        if arg in TICKET_VERB_HELP:
+            return TICKET_VERB_HELP[arg]
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    verb_help = _ticket_verb_help(list(sys.argv[1:] if argv is None else argv))
+    if verb_help is not None:
+        sys.stdout.write(verb_help)
+        return 0
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
