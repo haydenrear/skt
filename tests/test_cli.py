@@ -132,3 +132,44 @@ def test_ticket_verb_help_does_not_swallow_a_real_call():
     """
     result = run("ticket", "new")
     assert not result.stdout.startswith("usage: skt ticket new <ticket>")
+
+
+# --- the two front doors agree about the base ------------------------------
+#
+# `wt new <ticket> <base>` is positional and is the spelling git-issue-workflow
+# documents. `skt ticket new` accepted only `--base`, so an agent that had read
+# the skill wrote `skt ticket new TICKET-42 main` and got "unrecognized
+# arguments: main". Measured in the ticket-open eval.
+
+def _parsed(*argv):
+    import sys
+    sys.path.insert(0, str(CLI.parents[1]))
+    from skt.cli import build_parser
+    return build_parser().parse_args(list(argv))
+
+
+def test_positional_base_is_accepted():
+    a = _parsed("ticket", "new", "TICKET-42", "main")
+    assert a.ticket_id == "TICKET-42"
+    assert (a.base or a.base_pos) == "main"
+
+
+def test_flag_base_still_works():
+    a = _parsed("ticket", "new", "TICKET-42", "--base", "HEAD")
+    assert (a.base or a.base_pos) == "HEAD"
+
+
+def test_flag_beats_positional_when_both_given():
+    """Least surprising rule, and it keeps every existing call unchanged."""
+    a = _parsed("ticket", "new", "T-1", "main", "--base", "HEAD")
+    assert (a.base or a.base_pos) == "HEAD"
+
+
+def test_no_base_is_still_no_base():
+    a = _parsed("ticket", "new", "T-1")
+    assert (a.base or a.base_pos) is None
+
+
+def test_the_epic_shape_is_unaffected():
+    a = _parsed("ticket", "new", "T-1", "--base", "abc123", "--path", "../wt-t-1")
+    assert a.path == "../wt-t-1" and (a.base or a.base_pos) == "abc123"

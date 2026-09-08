@@ -89,6 +89,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ticket.add_argument("verb", nargs="?", choices=["new", "close", "info", "list", "sweep"])
     ticket.add_argument("ticket_id", nargs="?")
+    # THE POSITIONAL BASE, because the OTHER front door takes one.
+    #
+    # `wt new <ticket> <base>` is positional and is what git-issue-workflow
+    # documents; `skt ticket new` took only `--base`. An agent that had read
+    # the skill wrote `skt ticket new TICKET-42 main` and got
+    #
+    #     skt: error: unrecognized arguments: main
+    #
+    # -- measured in the ticket-open eval. Two doors onto one lifecycle that
+    # disagree about how to spell the same argument is a trap for anyone who
+    # learned either one, and the docs teach the spelling that failed.
+    ticket.add_argument("base_pos", nargs="?", metavar="BASE",
+                        help="base commit or ref, positional -- the same thing "
+                             "--base names, accepted so `skt ticket new <ticket> "
+                             "<base>` and `wt new <ticket> <base>` agree")
     ticket.add_argument("--base", help="base branch for ticket new")
     ticket.add_argument(
         "--path",
@@ -185,12 +200,15 @@ def _import_sibling(name: str):
 # flag that belongs to its parent.
 TICKET_VERB_HELP = {
     "new": (
-        "usage: skt ticket new <ticket> [--base <ref>] [--path <dir>]\n"
+        "usage: skt ticket new <ticket> [<base>] [--base <ref>] [--path <dir>]\n"
         "\n"
         "Create the worktree AND its own Skill Manager home, in one command,\n"
         "rolled back together if the bootstrap fails.\n"
         "\n"
         "  <ticket>        the ticket id; the branch becomes feature/<ticket>\n"
+        "  <base>          the base, positionally -- the same thing --base\n"
+        "                  names. Accepted so this and `wt new <ticket>\n"
+        "                  <base>` agree; --base wins if you give both.\n"
         "  --base <ref>    commit or ref to branch from. Resolve it FIRST and\n"
         "                  pass the SHA in epic mode -- a bare epic/<slug>\n"
         "                  names the local ref, which a server-side merge does\n"
@@ -284,7 +302,10 @@ def main(argv: list[str] | None = None) -> int:
         return _import_sibling("ticket").run(
             args.verb,
             args.ticket_id,
-            base=args.base,
+            # --base wins when both are given: an explicit flag beating a
+            # positional is the least surprising rule, and it keeps every
+            # existing call behaving exactly as it did.
+            base=args.base or args.base_pos,
             path=args.path,
             epic=args.epic,
             target=args.target,
