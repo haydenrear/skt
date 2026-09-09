@@ -663,3 +663,49 @@ def test_a_local_build_is_beside_a_release_not_behind_it():
     tapped = {"state": "ok", "installed": "0.25.0", "latest": "0.25.1",
               "local_build": False, "outdated": True}
     assert len(check_mod._cli_notifications(tapped)) == 1
+
+
+# --- "all current" is a claim, and it needs something to have been checked ---
+#
+# `unverifiable` means the remote was unreachable, so a unit's currency is
+# UNKNOWN. With EVERY unit in that list the headline still said "all current"
+# and trailed its own refutation after a semicolon. Measured in the
+# syncs-a-stale-home-from-root eval: the agent read it, did not believe it, and
+# spent twenty Bash calls rebuilding the check by hand out of units.lock and
+# `git rev-parse`. That was the correct response to the sentence.
+
+def _report(**kw):
+    base = dict(home="/h", tier="project", notifications=[], cache_state=None,
+                checked_units=["a", "b", "c"], unverifiable=[])
+    base.update(kw)
+    return base
+
+
+def test_nothing_verifiable_does_not_claim_current():
+    from skt.check import render_text
+    out = render_text(_report(unverifiable=["a", "b", "c"]))
+    assert "all current" not in out, out
+    assert "UNKNOWN" in out
+    assert "unreachable: a, b, c" in out
+
+
+def test_partial_says_how_many_were_actually_checked():
+    from skt.check import render_text
+    out = render_text(_report(unverifiable=["b"]))
+    assert "2 of 3" in out, out
+    assert "all current" not in out
+
+
+def test_everything_verified_still_says_all_current():
+    """The common case must not become noisier for the sake of the rare one."""
+    from skt.check import render_text
+    out = render_text(_report())
+    assert out.startswith("skt check: all current (3 change-managed unit(s)")
+    assert "UNKNOWN" not in out
+
+
+def test_no_units_at_all_is_not_an_unknown_verdict():
+    """Zero checked units is 'nothing to check', not 'nothing could be checked'."""
+    from skt.check import render_text
+    out = render_text(_report(checked_units=[], unverifiable=[]))
+    assert "all current" in out

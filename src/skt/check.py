@@ -1209,12 +1209,41 @@ def render_text(report: dict) -> str:
     stale_ref = report.get("upstream_stale") or []
     ahead_of_remote = report.get("ahead_of_remote") or []
     if not notes:
-        scope = f"{len(report['checked_units'])} change-managed unit(s)"
-        line = f"skt check: all current ({scope}, tier {report['tier']})"
-        if unverifiable:
-            line += f"; unverifiable: {', '.join(unverifiable)}"
+        checked = report["checked_units"]
+        scope = f"{len(checked)} change-managed unit(s)"
+        # "ALL CURRENT" IS A CLAIM, AND IT NEEDS SOMETHING TO HAVE BEEN CHECKED.
+        #
+        # `unverifiable` means the remote could not be reached, so the unit's
+        # currency is UNKNOWN. With every unit in that list the old headline
+        # still read
+        #
+        #   skt check: all current (20 change-managed unit(s), tier project);
+        #   unverifiable: acp-cdc-ai-python, …all twenty…
+        #
+        # -- a verdict of "current" about a set of which nothing was verified,
+        # with its own refutation trailing after a semicolon. Measured in the
+        # sync eval: the agent read it, did not believe it, and spent twenty
+        # Bash calls rebuilding the check by hand out of units.lock and
+        # `git rev-parse`. That is the correct response to this sentence, and
+        # the sentence is what cost the run.
+        #
+        # UNKNOWN is not a kind of current. Say which one this is.
+        if unverifiable and len(unverifiable) >= len(checked) and checked:
+            line = (f"skt check: could not verify ANY of {scope} (tier "
+                    f"{report['tier']}) — currency is UNKNOWN, not current")
+            body = [line, f"  unreachable: {', '.join(unverifiable)}",
+                    "  a network path to the unit repositories is what this needs;"
+                    " nothing here says a unit is out of date, and nothing says"
+                    " it is up to date either"]
+        elif unverifiable:
+            verified = len(checked) - len(unverifiable)
+            line = (f"skt check: {verified} of {len(checked)} change-managed unit(s)"
+                    f" current, tier {report['tier']}")
+            body = [line, f"  unverifiable (remote unreachable): {', '.join(unverifiable)}"]
+        else:
+            body = [f"skt check: all current ({scope}, tier {report['tier']})"]
         return "\n".join(
-            [line, *_artifact_lines(report), *_ref_lines(stale_ref, ahead_of_remote)]
+            [*body, *_artifact_lines(report), *_ref_lines(stale_ref, ahead_of_remote)]
         )
     lines = [f"skt check: {len(notes)} notification(s), tier {report['tier']}"]
     for note in notes:

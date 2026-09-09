@@ -135,7 +135,15 @@ def test_remote_tip_timeout_is_unverifiable_not_a_crash(tmp_path, monkeypatch, c
     report = check_mod.collect(repo)
     assert report["unverifiable"] == ["alpha"]
     assert report["notifications"] == []
-    assert "unverifiable" in check_mod.render_text(report)
+    # The PROPERTY this was written for: a timed-out remote is surfaced rather
+    # than crashed, and the unit is named. The exact word changed when the
+    # all-unknown case stopped calling itself "all current" -- with every unit
+    # unreachable the headline now says currency is UNKNOWN and lists them
+    # under "unreachable:". Asserting the word would pin the wording; this
+    # pins the behaviour.
+    rendered = check_mod.render_text(report)
+    assert "alpha" in rendered, rendered
+    assert "all current" not in rendered, rendered
 
 
 def test_check_run_never_raises(tmp_path, monkeypatch):
