@@ -196,6 +196,36 @@ def epic_new(ticket_id: str, base: str | None, path: str) -> int:
     commit_oid, tree_oid = commit.stdout.strip(), tree.stdout.strip()
     toplevel = git("rev-parse", "--show-toplevel").stdout.strip()
     repo_id = Path(toplevel).name if toplevel else "repo"
+    # A PATH `close` CAN FIND. `close-change.sh` resolves a ticket by looking in
+    # the repo's PARENT -- the derived `<parent>/<repo>-<ticket>`, then anything
+    # matching `*-<ticket>` there. A worktree created INSIDE the repo is in
+    # neither place, so this pair
+    #
+    #     skt ticket new  TICKET-7 --path ./wt-TICKET-7     -> created
+    #     skt ticket close TICKET-7                          -> "no worktree for
+    #                                                            ticket TICKET-7"
+    #
+    # both succeed at what they each do and disagree about where the worktree
+    # is. Measured in the ticket-close eval, then reproduced by hand outside it.
+    #
+    # Refused at CREATE, because that is the half that can still be corrected
+    # without anything having been built. An inside-the-repo worktree is also
+    # untracked content in the repo it belongs to, which makes the next
+    # clean-slate check fail -- so this rejects a path that was going to be a
+    # problem twice.
+    if toplevel:
+        try:
+            resolved = Path(path).resolve()
+            inside = resolved == Path(toplevel).resolve() \
+                or Path(toplevel).resolve() in resolved.parents
+        except (OSError, RuntimeError):
+            inside = False
+        if inside:
+            print(f"error: --path {path} is inside the repository, where `skt ticket close`")
+            print(f"       cannot find it: close searches {Path(toplevel).parent} for the")
+            print(f"       derived path and for '*-{ticket_id}', never inside the checkout.")
+            print(f"fix:   put it beside the repository — --path ../{Path(path).name}")
+            return 1
     ref_name = f"refs/index-bases/{repo_id}/{tree_oid}"
     existing = git("rev-parse", "--verify", "--quiet", ref_name)
     if existing.returncode == 0 and existing.stdout.strip() != commit_oid:
