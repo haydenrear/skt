@@ -291,6 +291,19 @@ def _store_dir(home: Path, unit: homes.Unit) -> Path | None:
     return None
 
 
+def _head_sha(unit_dir: Path, timeout: float) -> str | None:
+    """This checkout's HEAD, or None when there is no checkout to ask.
+
+    Local and network-free, which is the point: it answers half the
+    currency question with no remote at all.
+    """
+    proc = _run_git(["git", "-C", str(unit_dir), "rev-parse", "HEAD"], timeout)
+    if proc is None or proc.returncode != 0:
+        return None
+    out = (proc.stdout or "").strip()
+    return out or None
+
+
 def _is_ancestor(unit_dir: Path, ancestor: str, descendant: str, timeout: float) -> bool | None:
     """Is `ancestor` reachable from `descendant` IN THIS CHECKOUT?
 
@@ -958,6 +971,56 @@ def collect(start: str | Path = ".", *, use_network: bool = True,
         blocked = _blocking_error(unit, store)
         if blocked is not None:
             notifications.append(blocked)
+
+        # THE RECORD AND THE CHECKOUT ARE TWO FACTS, AND THEY CAN DISAGREE.
+        #
+        # `installed/<unit>.json` is what every other command reads to decide
+        # what this home HAS. The checkout under skills/<unit> is what it
+        # actually holds. A sync that failed part way, a hand-edited record, a
+        # restored backup — any of them leaves the two saying different things,
+        # and nothing was reporting it.
+        #
+        # Worse, the ancestry probe below RESOLVED that disagreement silently in
+        # the checkout's favour: with a stale record and a current checkout,
+        # `tip != git_hash` is true, `_is_ancestor(tip, HEAD)` is true because
+        # the CHECKOUT already contains the tip, and the verdict came out
+        # "ahead of the remote tip (nothing to pull)" — about a home whose
+        # record is behind. A question about the record, answered from the
+        # checkout, with no sign that the two were not the same thing.
+        #
+        # Measured in the syncs-a-stale-home-from-root eval: the agent was told
+        # something was out of date, `skt check` said the home was fine, and it
+        # spent ~30 Bash calls comparing installed/*.json against
+        # units.lock.toml against `git rev-parse` by hand. It was reconstructing
+        # exactly this check.
+        #
+        # Local, so it holds with no network at all — which is the state a
+        # worktree on a plane or a CI box without credentials is always in.
+        # NOT WHEN `blocked` ALREADY EXPLAINED IT. A store mid-merge has a
+        # record that disagrees with its checkout BY CONSTRUCTION, and the
+        # recorded error already named the state and the resolve-in-the-store
+        # remedy. Saying "settle with: skt sync" beside it would re-run the
+        # merge that made the conflict and put stash@{0} at risk -- which is
+        # the one action test_merge_conflict_unit_is_never_told_to_sync exists
+        # to forbid, and it caught this.
+        if blocked is None and store is not None and unit.git_hash:
+            head = _head_sha(store, min(float(LOCAL_TIMEOUT_SECONDS),
+                                        max(0.0, deadline - time.monotonic())))
+            if head and head != unit.git_hash:
+                notifications.append(
+                    {
+                        "kind": "record-disagrees-with-checkout",
+                        "unit": unit.name,
+                        "record": unit.git_hash[:8],
+                        "checkout": head[:8],
+                        "message": (
+                            f"{unit.name}: this home's record says {unit.git_hash[:8]} "
+                            f"but the checkout holds {head[:8]} — the record is what "
+                            f"every other command reads"
+                        ),
+                        "fix": f"skt sync {unit.name}",
+                    }
+                )
         if use_network:
             tip = tips.get(unit.name)
             if tip is None:
@@ -1266,6 +1329,13 @@ def render_text(report: dict) -> str:
             lines.append(f"    migrate with: {note['fix']}")
             lines.append("    safe: it only rewrites entries this home can "
                          "already run, and leaves the rest alone")
+        elif note.get("kind") == "record-disagrees-with-checkout":
+            # Own line, retypable, like every other fast path here. The
+            # reassurance matters as much as the command: this is not damage,
+            # it is two records of one fact that drifted apart, and the sync
+            # settles them.
+            lines.append(f"    settle with: {note['fix']}")
+            lines.append("    the checkout is not lost — sync re-records what is there")
         elif note.get("kind") == "unit-error":
             # Same shape, and for the same reason — plus the home's own
             # recorded sentence, which names the remote, the branch and

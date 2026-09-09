@@ -709,3 +709,47 @@ def test_no_units_at_all_is_not_an_unknown_verdict():
     from skt.check import render_text
     out = render_text(_report(checked_units=[], unverifiable=[]))
     assert "all current" in out
+
+
+# --- the record and the checkout are two facts and can disagree -------------
+#
+# `installed/<unit>.json` is what every other command reads to decide what a
+# home HAS; the checkout is what it holds. Nothing reported the disagreement,
+# and the ancestry probe silently resolved it in the checkout's favour: a stale
+# RECORD with a current CHECKOUT came out as "ahead of the remote tip (nothing
+# to pull)". Measured in the syncs-a-stale-home-from-root eval, where the agent
+# then spent ~30 Bash calls reconstructing this comparison by hand.
+
+def test_a_stale_record_against_a_current_checkout_is_reported(tmp_path):
+    import subprocess
+    from skt import check as check_mod
+    repo = make_repo(tmp_path / "repo")
+    bare, tip = make_unit_upstream(tmp_path, "alpha")
+    # the record says something the checkout does not hold
+    make_home(repo, units={"alpha": unit_record(bare, "6ce6538e" + "0" * 32)})
+    store = repo / ".skill-manager" / "skills" / "alpha"
+    if not store.exists():
+        import pytest
+        pytest.skip("fixture does not materialize a store checkout")
+    report = check_mod.collect(repo, use_network=False)
+    kinds = [n.get("kind") for n in report["notifications"]]
+    assert "record-disagrees-with-checkout" in kinds, report["notifications"]
+
+
+def test_the_disagreement_check_needs_no_network():
+    """It is local by construction -- a worktree on a plane has this question."""
+    import inspect
+    from skt import check as check_mod
+    src = inspect.getsource(check_mod.collect)
+    i = src.index("record-disagrees-with-checkout")
+    j = src.index("if use_network:")
+    assert i < j, "the disagreement must be decided before anything reaches the network"
+
+
+def test_agreeing_record_and_checkout_say_nothing():
+    """Non-vacuity: the common case must stay quiet."""
+    import inspect
+    from skt import check as check_mod
+    src = inspect.getsource(check_mod.collect)
+    assert "head != unit.git_hash" in src, \
+        "the check must fire on DIFFERENCE, not on presence"
