@@ -12,6 +12,7 @@ age attached so a reader can see how old they are.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import time
 from pathlib import Path
@@ -179,6 +180,50 @@ def _descent_parent(home: Path) -> str | None:
     return None
 
 
+# One-time: skill-manager moved into this plugin and skill-dev-skill was
+# deleted. Printed, never documented — it disappears once the home is migrated.
+RETIRED_UNITS = ("skill-manager", "skill-dev-skill")
+_RETIRED_MANIFEST = re.compile(
+    r"^\s*\[skills\.(skill-manager|skill-dev-skill)\]"
+    r"|github:haydenrear/(skill-manager-skill|skill-dev-skill)\b",
+    re.MULTILINE,
+)
+
+
+def _migration(home: Path, start: str | Path) -> dict | None:
+    standalone = [n for n in RETIRED_UNITS if (home / "skills" / n).is_dir()]
+    manifest = ctx_mod.checkout_root(start) / "skill-project.toml"
+    declared: list[str] = []
+    if manifest.is_file():
+        try:
+            text = manifest.read_text(errors="ignore")
+        except OSError:
+            text = ""
+        for m in _RETIRED_MANIFEST.finditer(text):
+            name = m.group(1) or ("skill-manager" if m.group(2) == "skill-manager-skill" else m.group(2))
+            if name not in declared:
+                declared.append(name)
+    if not standalone and not declared:
+        return None
+    return {"standalone": standalone, "manifest": str(manifest) if declared else None,
+            "declared": declared}
+
+
+def _migration_lines(block: dict | None) -> list[str]:
+    if not block:
+        return []
+    lines = ["migrate    skill-manager now ships inside the skt plugin; skill-dev-skill is gone. "
+             "Do NOT edit imports or references — they resolve to skt's copy."]
+    if block["standalone"]:
+        lines.append(f"           this home still holds {', '.join(block['standalone'])} — run once: "
+                     "skill-manager sync skt   (retires it automatically)")
+    if block["declared"]:
+        blocks = ", ".join(f"[skills.{n}]" for n in block["declared"])
+        lines.append(f"           skill-project.toml declares {blocks} — delete that block; skt provides it "
+                     "(declare [plugins.skt] source = \"github:haydenrear/skt\" if the manifest has no skt entry)")
+    return lines
+
+
 def collect(start: str | Path = ".") -> dict:
     home = homes.find_home(start)
     if home is None:
@@ -237,6 +282,7 @@ def collect(start: str | Path = ".") -> dict:
             for u in units
         ],
         "plugins": homes.read_plugins(home),
+        "migration": _migration(home, start),
     }
 
 
@@ -340,6 +386,7 @@ def render_text(report: dict) -> str:
     if report["drift_pending"]:
         home_line += ", DRIFT PENDING (launch will refuse; ack with: skill-manager home drift --ack)"
     lines.append(home_line)
+    lines += _migration_lines(report.get("migration"))
     lines += _promotion_lines(report)
     spec = report["spec_workflow"]
     if spec["name"]:

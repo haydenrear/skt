@@ -445,3 +445,35 @@ def test_status_survives_a_record_written_before_the_cli_block(tmp_path):
     (cache / "skt-check.json").write_text(_json.dumps({"schema": 4, "checked_at": time.time()}))
     text = status.render_text(status.collect(repo))
     assert "cli-ver" not in text
+
+
+def test_migration_notice_for_a_standalone_retired_unit(tmp_path):
+    repo = make_repo(tmp_path / "proj")
+    home = make_home(repo, units={"skill-manager": {}}, plugins=["skt"])
+    (home / "skills" / "skill-manager").mkdir(parents=True)
+    report = status.collect(repo)
+    assert report["migration"]["standalone"] == ["skill-manager"]
+    text = status.render_text(report)
+    assert "Do NOT edit imports or references" in text
+    assert "skill-manager sync skt" in text
+
+
+def test_migration_notice_for_a_manifest_declaring_it(tmp_path):
+    repo = make_repo(tmp_path / "proj")
+    make_home(repo)
+    (repo / "skill-project.toml").write_text(
+        '[project]\nname = "p"\n\n[skills.skill-manager]\nsource = "github:haydenrear/skill-manager-skill"\n'
+    )
+    report = status.collect(repo)
+    assert report["migration"]["declared"] == ["skill-manager"]
+    assert "[skills.skill-manager] — delete that block" in status.render_text(report)
+
+
+def test_no_migration_notice_on_a_migrated_home(tmp_path):
+    repo = make_repo(tmp_path / "proj")
+    home = make_home(repo, plugins=["skt"])
+    (home / "plugins" / "skt" / "skills" / "skill-manager").mkdir(parents=True)
+    (repo / "skill-project.toml").write_text('[project]\nname = "p"\n\n[plugins.skt]\nsource = "github:haydenrear/skt"\n')
+    report = status.collect(repo)
+    assert report["migration"] is None
+    assert "migrate" not in status.render_text(report)
