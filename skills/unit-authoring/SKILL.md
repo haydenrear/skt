@@ -2,8 +2,8 @@
 name: unit-authoring
 description: 'Author and maintain installable skill-manager units: skills, plugins, doc-repos, and harnesses. Read this before editing any file inside a unit — SKILL.md, its frontmatter or description, skill-manager.toml, plugin.json, harness.toml, or a references/ page — not only when creating one from scratch. Use when making a directory installable by skill-manager, choosing a unit kind, scaffolding a unit, writing or reviewing unit manifests/TOML, adding CLI or MCP dependencies, wiring references, validating install/bind/instantiate round-trips, preparing optional registry metadata, or shipping an edit to an already-installed unit so it reaches $SKILL_MANAGER_HOME (commit, push, then `skill-manager sync`). Detailed schemas live in references for skills, plugins, doc-repos, harnesses, scaffolding, coordinates/distribution, dependencies, bindings/sync, and skill-script.'
 skill-imports:
-  - unit: skill-manager
-    path: references/skill-imports.md
+  - unit: skt
+    path: skills/skill-manager/references/skill-imports.md
     reason: Defines semantic markdown imports used by authored unit scaffolds.
     section: semantics
 ---

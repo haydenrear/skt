@@ -1,7 +1,7 @@
 ---
 skill-imports:
-  - unit: skill-manager
-    path: references/mcp.md
+  - unit: skt
+    path: skills/skill-manager/references/mcp.md
     reason: Explains how MCP servers are registered and used through the virtual gateway.
     section: mcp-dependencies
 ---

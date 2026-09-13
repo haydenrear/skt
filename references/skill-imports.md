@@ -1,7 +1,7 @@
 ---
 skill-imports:
-  - unit: skill-manager
-    path: references/skill-imports.md
+  - unit: skt
+    path: skills/skill-manager/references/skill-imports.md
     reason: Defines the canonical skill-imports syntax and validation behavior.
     section: fields
 ---
