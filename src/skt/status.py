@@ -190,10 +190,17 @@ _RETIRED_MANIFEST = re.compile(
 )
 
 
+_CARRIER_AS_SKILL = re.compile(
+    r"^\s*\[skills\.(skill-publisher|skt)\]\s*\n\s*source\s*=\s*\"[^\"]*(skill-publisher-skill|haydenrear/skt)",
+    re.MULTILINE,
+)
+
+
 def _migration(home: Path, start: str | Path) -> dict | None:
     standalone = [n for n in RETIRED_UNITS if (home / "skills" / n).is_dir()]
     manifest = ctx_mod.checkout_root(start) / "skill-project.toml"
     declared: list[str] = []
+    text = ""
     if manifest.is_file():
         try:
             text = manifest.read_text(errors="ignore")
@@ -203,10 +210,14 @@ def _migration(home: Path, start: str | Path) -> dict | None:
             name = m.group(1) or ("skill-manager" if m.group(2) == "skill-manager-skill" else m.group(2))
             if name not in declared:
                 declared.append(name)
-    if not standalone and not declared:
+    # skt under its pre-plugin name: installs the plugin but is refused as a
+    # SKILL ("expected SKILL but installed PLUGIN"), so resolve fails outright.
+    carrier_as_skill = bool(manifest.is_file() and _CARRIER_AS_SKILL.search(text))
+    if not standalone and not declared and not carrier_as_skill:
         return None
-    return {"standalone": standalone, "manifest": str(manifest) if declared else None,
-            "declared": declared}
+    return {"standalone": standalone,
+            "manifest": str(manifest) if (declared or carrier_as_skill) else None,
+            "declared": declared, "carrier_as_skill": carrier_as_skill}
 
 
 def _migration_lines(block: dict | None) -> list[str]:
@@ -221,6 +232,10 @@ def _migration_lines(block: dict | None) -> list[str]:
         blocks = ", ".join(f"[skills.{n}]" for n in block["declared"])
         lines.append(f"           skill-project.toml declares {blocks} — delete that block; skt provides it "
                      "(declare [plugins.skt] source = \"github:haydenrear/skt\" if the manifest has no skt entry)")
+    if block.get("carrier_as_skill"):
+        lines.append("           skill-project.toml declares skt as a skill ([skills.skill-publisher]) — "
+                     "replace that block with [plugins.skt] source = \"github:haydenrear/skt\"; "
+                     "resolve refuses a plugin declared as a skill")
     return lines
 
 

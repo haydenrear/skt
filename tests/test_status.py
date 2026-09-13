@@ -477,3 +477,14 @@ def test_no_migration_notice_on_a_migrated_home(tmp_path):
     report = status.collect(repo)
     assert report["migration"] is None
     assert "migrate" not in status.render_text(report)
+
+
+def test_migration_notice_for_skt_declared_as_a_skill(tmp_path):
+    repo = make_repo(tmp_path / "proj")
+    make_home(repo, plugins=["skt"])
+    (repo / "skill-project.toml").write_text(
+        '[project]\nname = "p"\n\n[skills.skill-publisher]\nsource = "github:haydenrear/skill-publisher-skill"\n'
+    )
+    report = status.collect(repo)
+    assert report["migration"]["carrier_as_skill"] is True
+    assert "replace that block with [plugins.skt]" in status.render_text(report)
