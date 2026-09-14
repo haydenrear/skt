@@ -144,8 +144,18 @@ flows:
 
 Use the CLI for install state, local projections, registry operations,
 project manifests, child-home projections, gateway process lifecycle,
-and lock maintenance. Prefer checking help before relying on remembered
-flags:
+and lock maintenance.
+
+Two answers agents most often go looking for:
+
+- A unit missing from `skill-manager list` is **installed, not synced**:
+  `skill-manager install github:<owner>/<repo>` (the coordinate names the
+  repository, e.g. `github:haydenrear/git-issue-workflow-skill`). `sync` only
+  refreshes a unit that is already installed.
+- `install` has **no `--home`**. To install into a particular home, run that
+  home's own entrypoint: `<home>/bin/cli/skill-manager install <source>`.
+
+Prefer checking help before relying on remembered flags:
 
 ```bash
 skill-manager --help

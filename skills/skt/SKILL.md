@@ -34,10 +34,19 @@ skt ticket list       # every ticket worktree here, and what blocks retiring it
 skt ticket sweep      # retire many at once — dry run unless you pass --yes
 skt publish [<unit>]  # a home-edited skill -> up one tier -> its own git repo
 skt build [<id>]      # rebuild a derived artifact whose inputs you changed
+skill-manager home drift --ack --home=<home>   # clear the launch gate a sync warns about; the home is a flag, never positional
 ```
 
 `skt` is on `PATH` in every home **that installed this plugin**
 (`<home>/bin/cli/skt`). `skt --help` is authoritative for syntax.
+
+- `skt check` reporting `unverifiable (remote unreachable)` means currency could
+  NOT be established for those units — say so; do not rebuild the check from
+  `git ls-remote` or the lockfile.
+- A unit absent from `skill-manager list` is not installed, so it cannot be
+  synced — install it: `skill-manager install github:<owner>/<repo>` (the coord
+  names the repo, e.g. `github:haydenrear/git-issue-workflow-skill`). `sync`
+  only refreshes a unit that is already installed.
 
 **A home does not inherit it.** Project and worktree homes are copies of the
 home above them, so a home cloned from one that never installed `skt` has no
