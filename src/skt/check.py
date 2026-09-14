@@ -109,6 +109,9 @@ import shlex
 from . import context as ctx_mod
 from . import homes
 from . import relay as relay_mod
+# cli.py, not the package __init__: cli.py is the stdlib-only module, and
+# test_the_two_version_literals_agree keeps the two copies equal.
+from .cli import __version__ as SKT_VERSION
 
 # 2: the record gained `upstream_stale` and `ahead_of_remote`. Purely
 # additive, and every reader uses `.get(...) or []`, so a v1 record still
@@ -131,7 +134,13 @@ from . import relay as relay_mod
 # say a home's units were current while the binary reading them was a
 # release behind, because skill-manager is a brew formula rather than a
 # change-managed unit and nothing here had ever looked at it.
-SCHEMA_VERSION = 5
+# 6: the record gained `skt_version` and `skill_manager_build`, and the `cli`
+# block gained `build` (skill-manager#338, "every verdict names the build
+# that produced it"). Additive on the established terms. A verdict about a
+# home is a verdict BY a build: the same home read "nothing is damaged"
+# under one skill-manager and carried 8 findings under another, one minute
+# apart, and nothing in either output said which had answered.
+SCHEMA_VERSION = 6
 DEFAULT_TTL_SECONDS = 900
 NOTIFY_EXIT = 10
 REMOTE_TIMEOUT_SECONDS = 10
@@ -475,6 +484,29 @@ def _parse_version(text: str) -> tuple[int, ...] | None:
 
 
 def _installed_cli_version(home: Path, timeout: float) -> tuple[str | None, str]:
+    """`(version, why)` -- `_installed_cli_identity` without the build."""
+    version, why, _build = _installed_cli_identity(home, timeout)
+    return version, why
+
+
+def _build_stamp(version_stdout: str) -> str | None:
+    """skill-manager's own verdict stamp, rebuilt from its `--version`.
+
+    `--version` prints the release line, then `build:` and `cli:` lines;
+    skill-manager's verdicts print `build: <release line> @ <build>`
+    (BuildIdentity.stamp). Joined the same way here so `skt check` and
+    `home repair` name one build in one spelling, and a reader can grep for
+    it across both. None when the CLI printed nothing to join.
+    """
+    lines = [line.strip() for line in (version_stdout or "").strip().splitlines()]
+    if not lines or not lines[0]:
+        return None
+    build = next((line[len("build:"):].strip() for line in lines[1:]
+                  if line.startswith("build:")), None)
+    return f"{lines[0]} @ {build}" if build else lines[0]
+
+
+def _installed_cli_identity(home: Path, timeout: float) -> tuple[str | None, str, str | None]:
     """The version of the CLI THIS HOME runs, not the one brew installed.
 
     The distinction is the whole point. `skill-manager` on PATH is usually
@@ -488,10 +520,10 @@ def _installed_cli_version(home: Path, timeout: float) -> tuple[str | None, str]
 
     cli = _cli(home)
     if not cli.is_file():
-        return None, f"this home has no skill-manager CLI pin at {cli}"
+        return None, f"this home has no skill-manager CLI pin at {cli}", None
     proc = _run_git([str(cli), "--version"], timeout, env=_cli_env())
     if proc is None:
-        return None, "the CLI did not answer --version inside its budget"
+        return None, "the CLI did not answer --version inside its budget", None
     if proc.returncode != 0:
         # A REFUSAL IS NOT EVIDENCE ABOUT A VERSION (skill-manager#264).
         # A `bin/cli` shim binds the home it lives in and refuses when
@@ -506,19 +538,19 @@ def _installed_cli_version(home: Path, timeout: float) -> tuple[str | None, str]
             return None, CLI_REFUSED_PREFIX + (
                 "; ".join(line.strip() for line in refusal)
                 or f"a bin/cli shim refused a cross-home run (exit {proc.returncode})"
-            )
+            ), None
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
         return None, f"{cli} --version exited {proc.returncode}" + (
             f": {detail[0]}" if detail else ""
-        )
+        ), None
     # `skill-manager 0.25.0`, then `build:` and `cli:` lines.
     first = (proc.stdout or "").strip().splitlines()
     if not first:
-        return None, "the CLI printed no version line"
+        return None, "the CLI printed no version line", None
     token = first[0].split()
     if len(token) < 2 or _parse_version(token[-1]) is None:
-        return None, f"could not read a version from {first[0]!r}"
-    return token[-1], ""
+        return None, f"could not read a version from {first[0]!r}", _build_stamp(proc.stdout)
+    return token[-1], "", _build_stamp(proc.stdout)
 
 
 def _brew_latest(timeout: float) -> tuple[str | None, str]:
@@ -583,7 +615,7 @@ def _cli_state(home: Path, deadline: float) -> dict:
     if budget <= 0:
         return {"state": "timeout", "reason": "the shared budget was spent before this probe"}
 
-    installed, why = _installed_cli_version(home, budget)
+    installed, why, build = _installed_cli_identity(home, budget)
     if installed is None:
         state = "no-cli" if "CLI pin" in why else (
             "timeout" if "budget" in why else "error"
@@ -594,7 +626,10 @@ def _cli_state(home: Path, deadline: float) -> dict:
                 f"SKILL_MANAGER_HOME={home} skt check   # the pin is fine; the "
                 "environment names a different home than the shim serves"
             )
-        return {"state": state, "reason": why, "fix": fix}
+        out = {"state": state, "reason": why, "fix": fix}
+        if build:
+            out["build"] = build
+        return out
 
     # A LOCAL BUILD IS NOT BEHIND A RELEASE, it is beside it. skill-manager
     # stamps a build suffix -- `0.25.0+g08a1c00d4503` -- on a CLI built from
@@ -609,13 +644,14 @@ def _cli_state(home: Path, deadline: float) -> dict:
     local_build = "+" in installed
     latest, why_latest = _brew_latest(max(0.5, deadline - time.monotonic()))
     if latest is None:
-        return {"state": "unknown-latest", "installed": installed,
+        return {"state": "unknown-latest", "installed": installed, "build": build,
                 "local_build": local_build, "reason": why_latest}
 
     behind = (not local_build) and _parse_version(installed) < _parse_version(latest)
     return {
         "state": "ok",
         "installed": installed,
+        "build": build,
         "latest": latest,
         "local_build": local_build,
         "outdated": behind,
@@ -1139,6 +1175,11 @@ def collect(start: str | Path = ".", *, use_network: bool = True,
         "schema": SCHEMA_VERSION,
         "home": str(home),
         "tier": tier,
+        # #338: which builds produced this verdict -- this skt, and the
+        # skill-manager it consulted (null, with `cli.reason`, when none
+        # answered).
+        "skt_version": SKT_VERSION,
+        "skill_manager_build": cli.get("build"),
         "cli": cli,
         "artifacts": artifacts,
         "checked_units": checked,
@@ -1255,6 +1296,26 @@ def cached_report(home: Path, ttl: int) -> dict:
     return raw
 
 
+def _build_line(report: dict) -> str:
+    """`  build: skt <v>; skill-manager <stamp>` -- which builds gave this verdict.
+
+    Every verdict `skt check` renders carries it (skill-manager#338). The
+    skill-manager half is the build this pass CONSULTED, not the one on
+    PATH, and when none answered it says so and why rather than naming a
+    build that played no part.
+    """
+    skt = report.get("skt_version")
+    skt_part = f"skt {skt}" if skt else "skt (version not recorded -- written by an older skt)"
+    build = report.get("skill_manager_build")
+    if build:
+        sm_part = f"skill-manager {build}" if not build.startswith("skill-manager") else build
+    else:
+        cli = report.get("cli") or {}
+        state = cli.get("state") or "not recorded"
+        sm_part = f"no skill-manager build consulted ({state})"
+    return f"  build: {skt_part}; {sm_part}"
+
+
 def render_text(report: dict) -> str:
     if report.get("home") is None:
         return f"skt check: {report['error']}"
@@ -1266,6 +1327,7 @@ def render_text(report: dict) -> str:
         age = int(time.time() - stale.get("checked_at", 0))
         lines = [f"skt check: cached result is {age}s old (expired) — refresh with: skt check"]
         lines += [f"  [stale] {n['message']}" for n in stale.get("notifications", [])]
+        lines.append(_build_line(stale))
         return "\n".join(lines)
     notes = report["notifications"]
     unverifiable = report.get("unverifiable") or []
@@ -1306,7 +1368,8 @@ def render_text(report: dict) -> str:
         else:
             body = [f"skt check: all current ({scope}, tier {report['tier']})"]
         return "\n".join(
-            [*body, *_artifact_lines(report), *_ref_lines(stale_ref, ahead_of_remote)]
+            [*body, *_artifact_lines(report), *_ref_lines(stale_ref, ahead_of_remote),
+             _build_line(report)]
         )
     lines = [f"skt check: {len(notes)} notification(s), tier {report['tier']}"]
     for note in notes:
@@ -1349,6 +1412,7 @@ def render_text(report: dict) -> str:
     lines += _ref_lines(stale_ref, ahead_of_remote)
     if report.get("hint"):
         lines.append(f"  hint: {report['hint']}")
+    lines.append(_build_line(report))
     return "\n".join(lines)
 
 
