@@ -29,6 +29,20 @@ and rationale live once in the skt plugin's
 `references/coords-and-distribution.md` (imported above); do not restate
 it here.
 
+Each unit is one table, keyed by its kind and its installed name:
+
+```toml
+[skills.git-issue]
+source = "github:haydenrear/git-issue-skill"
+
+[plugins.skt]
+source = "github:haydenrear/skt"
+```
+
+A plugin declared as `[skills.<name>]` is refused by `project resolve`, and a
+unit that skt now provides (`skill-manager`, `skill-publisher`) is deleted from
+the manifest rather than re-declared.
+
 Project resolution also treats the checkout as a harness descriptor:
 
 - The parent `$SKILL_MANAGER_HOME` records the registered project and
