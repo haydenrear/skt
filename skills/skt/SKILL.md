@@ -196,6 +196,12 @@ skt ticket sweep --epic <slug> --yes  # one epic's worktrees only
 Run it **from the primary checkout**. `sweep` refuses the worktree it is
 running in and never touches the primary.
 
+`--epic <slug>` resolves `epic/<slug>` (local or remote) and refuses if it
+cannot. A worktree is one of its tickets when its ticket id is in the epic's
+`ticket_plan.yaml`, or its tip is contained in the epic branch. The epic's
+own worktree is never swept by `--epic`; remove it on its own once the
+epic is finalized.
+
 Each worktree is measured *again* immediately before it is removed, and
 any one of these makes it **skipped, not removed** — reported, with the
 pass carrying on:
