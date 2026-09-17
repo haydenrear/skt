@@ -101,6 +101,15 @@ got the root cause wrong, in opposite directions, and the page names both.
 
 ## When `skt check` says a unit is NOT stale
 
+**A project or worktree home tracks the repository's pin, not the unit's
+trunk.** When the checkout's `skill-project.toml` gives a unit a
+`revision`, `skt check` in that home compares against the pin, never the
+remote tip: at the pin it lists the unit under `pinned by
+skill-project.toml (nothing to pull)`; off the pin it emits `pin-drift`
+with `restore the pin with: … project resolve --project-dir <repo>`. Do
+not `skt sync` a pinned unit there — that pulls trunk and breaks the
+repository that pinned it. The root home ignores pins and tracks trunk.
+
 A unit whose installed hash disagrees with its remote tip is usually
 behind it. Sometimes the home already knows better: the installer
 records `errors[*].kind` when it leaves a store in a state it could not
@@ -189,7 +198,7 @@ loss appears in no diff, no PR and no fan-out.
 ```bash
 skt ticket list                       # read-only: what is standing, and what blocks it
 skt ticket sweep                      # the plan. Changes NOTHING without --yes
-skt ticket sweep --yes                # retire every worktree that passes its own gate
+skt ticket sweep --target origin/main --yes  # retire every worktree that passes its own gate
 skt ticket sweep --epic <slug> --yes  # one epic's worktrees only
 ```
 
@@ -201,6 +210,11 @@ cannot. A worktree is one of its tickets when its ticket id is in the epic's
 `ticket_plan.yaml`, or its tip is contained in the epic branch. The epic's
 own worktree is never swept by `--epic`; remove it on its own once the
 epic is finalized.
+
+`--yes` needs a containment target. With no `--epic`, no `--target` and no
+single discoverable `epic/*` branch, the dry run still lists every worktree
+(noting that containment was not checked), but `--yes` refuses and removes
+nothing: pass `--epic <slug>` or `--target <ref>` (e.g. `--target origin/main`).
 
 Each worktree is measured *again* immediately before it is removed, and
 any one of these makes it **skipped, not removed** — reported, with the

@@ -380,6 +380,21 @@ def _local_state(unit_dir: Path, *, deadline: float | None = None,
     if proc.returncode == 0 and proc.stdout.strip() and int(proc.stdout.strip()) > 0:
         if remote_tip and _is_ancestor(unit_dir, "HEAD", remote_tip, _timeout()) is True:
             return STATE_UPSTREAM_STALE
+        # HEAD on ANY remote-tracking ref is published, whatever this
+        # branch's own upstream says — and that needs no network. Without
+        # it, a pristine checkout whose branch upstream lagged but whose
+        # HEAD sat on origin/main read "ahead" whenever the live tip could
+        # not be fetched in budget, and `skt ticket close` named it as an
+        # edited unit (#390, handoff observation 1).
+        contained = _run_git(
+            ["git", "-C", str(unit_dir), "for-each-ref", "--count=1", "--contains", "HEAD",
+             "--format=%(refname)", "refs/remotes/"],
+            _timeout(),
+        )
+        if contained is None:
+            return "unknown"
+        if contained.returncode == 0 and contained.stdout.strip():
+            return STATE_UPSTREAM_STALE
         return "ahead"
     return "clean"
 
@@ -942,6 +957,85 @@ def _artifact_notifications(state: dict, unit_notes: list[dict]) -> list[dict]:
     return out
 
 
+def _normalize_source(text: str | None) -> str | None:
+    """`github:o/r`, `git+https://github.com/o/r.git`, `https://github.com/o/r`
+    all as `github.com/o/r` — enough to match a manifest entry to a record."""
+    if not text:
+        return None
+    value = text.strip()
+    for prefix in ("git+",):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    if value.startswith("github:"):
+        value = "github.com/" + value[len("github:"):]
+    for scheme in ("https://", "http://", "ssh://", "git://", "file://"):
+        if value.startswith(scheme):
+            value = value[len(scheme):]
+    if value.startswith("git@"):
+        value = value[len("git@"):].replace(":", "/", 1)
+    value = value.split("#", 1)[0].rstrip("/")
+    if value.endswith(".git"):
+        value = value[: -len(".git")]
+    return value.lower() or None
+
+
+def manifest_pins(root: Path) -> tuple[Path | None, list[dict]]:
+    """The `revision` pins in `<root>/skill-project.toml`, one row per entry.
+
+    A keyed table — `[skills.<alias>]` with `source` and `revision` — is the
+    only place skill-manager's manifest schema carries a pin; the array
+    form (`skills = ["github:o/r"]`) has none. The alias is not the
+    installed unit name in general, so each row also carries its source,
+    normalized, for matching against an installed record's origin.
+    """
+    manifest = root / "skill-project.toml"
+    if not manifest.is_file():
+        return None, []
+    try:
+        import tomllib
+
+        data = tomllib.loads(manifest.read_text())
+    except (OSError, ValueError):
+        return manifest, []
+    rows: list[dict] = []
+    sections = [data, data.get("project") or {}]
+    for kind in ("skills", "plugins", "docs", "harnesses"):
+        for section in sections:
+            table = section.get(kind) if isinstance(section, dict) else None
+            if not isinstance(table, dict):
+                continue
+            for alias, entry in table.items():
+                if not isinstance(entry, dict):
+                    continue
+                revision = entry.get("revision")
+                if not isinstance(revision, str) or not revision.strip():
+                    continue
+                rows.append({
+                    "alias": alias,
+                    "source": _normalize_source(entry.get("source") or entry.get("coord")),
+                    "revision": revision.strip(),
+                })
+    return manifest, rows
+
+
+def _pin_for(unit: homes.Unit, rows: list[dict]) -> dict | None:
+    origin = _normalize_source(unit.origin)
+    for row in rows:
+        if row["alias"] == unit.name:
+            return row
+    for row in rows:
+        if origin and row["source"] == origin:
+            return row
+    return None
+
+
+def _same_revision(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return False
+    n = min(len(a), len(b))
+    return n >= 7 and a[:n].lower() == b[:n].lower()
+
+
 def collect(start: str | Path = ".", *, use_network: bool = True,
             probe_artifacts: bool = True, probe_cli: bool = True,
             probe_migration: bool = True) -> dict:
@@ -966,6 +1060,16 @@ def collect(start: str | Path = ".", *, use_network: bool = True,
     upstream_stale: list[str] = []
     ahead_of_remote: list[str] = []
     managed = [u for u in homes.read_units(home) if u.change_managed]
+    # THE ROOT HOME TRACKS A UNIT'S TRUNK; A PROJECT HOME TRACKS THE
+    # REPOSITORY'S PIN (#390). A project or worktree home whose manifest
+    # pins a unit is not stale for being behind the unit's default branch:
+    # `skt sync` there moved spec-double-compiler off the revision
+    # skill-project.toml names, and the repository could no longer collect
+    # its own conformance tests.
+    pinned: list[dict] = []
+    manifest, pin_rows = (
+        manifest_pins(ctx_mod.checkout_root(start)) if tier != "root" else (None, [])
+    )
     tips: dict[str, str | None] = {}
     # One deadline for the whole command: both git phases clamp every
     # subprocess to it, so the command's wall time is bounded by the
@@ -1057,6 +1161,36 @@ def collect(start: str | Path = ".", *, use_network: bool = True,
                         "fix": f"skt sync {unit.name}",
                     }
                 )
+        pin = _pin_for(unit, pin_rows) if pin_rows and blocked is None else None
+        if pin is not None:
+            if _same_revision(unit.git_hash, pin["revision"]):
+                pinned.append({
+                    "unit": unit.name,
+                    "revision": pin["revision"][:8],
+                    "manifest": str(manifest),
+                })
+            else:
+                cli = home / "bin" / "cli" / "skill-manager"
+                notifications.append(
+                    {
+                        "kind": "pin-drift",
+                        "unit": unit.name,
+                        "installed": (unit.git_hash or "")[:8],
+                        "pinned": pin["revision"][:8],
+                        "manifest": str(manifest),
+                        "message": (
+                            f"{unit.name}: this home holds {(unit.git_hash or '?')[:8]} but "
+                            f"{manifest} pins {pin['revision'][:8]} — a {tier} home tracks "
+                            "the repository's pin, not the unit's trunk"
+                        ),
+                        "fix": (
+                            f"{cli if cli.is_file() else 'skill-manager'} project resolve "
+                            f"--project-dir {manifest.parent}"
+                        ),
+                    }
+                )
+            # Neither verdict is about the remote tip: the manifest decides.
+            continue
         if use_network:
             tip = tips.get(unit.name)
             if tip is None:
@@ -1189,6 +1323,9 @@ def collect(start: str | Path = ".", *, use_network: bool = True,
         # the state is inspectable and `--json` consumers can see it.
         "upstream_stale": upstream_stale,
         "ahead_of_remote": ahead_of_remote,
+        # Units the repository's manifest pins, held at that pin. Not a
+        # notification: nothing to do, and `skt sync` would be wrong.
+        "pinned": pinned,
         "network": use_network,
         "checked_at": time.time(),
         "notifications": notifications,
@@ -1369,7 +1506,7 @@ def render_text(report: dict) -> str:
             body = [f"skt check: all current ({scope}, tier {report['tier']})"]
         return "\n".join(
             [*body, *_artifact_lines(report), *_ref_lines(stale_ref, ahead_of_remote),
-             _build_line(report)]
+             *_pinned_lines(report), _build_line(report)]
         )
     lines = [f"skt check: {len(notes)} notification(s), tier {report['tier']}"]
     for note in notes:
@@ -1399,6 +1536,9 @@ def render_text(report: dict) -> str:
             # settles them.
             lines.append(f"    settle with: {note['fix']}")
             lines.append("    the checkout is not lost — sync re-records what is there")
+        elif note.get("kind") == "pin-drift":
+            lines.append(f"    restore the pin with: {note['fix']}")
+            lines.append("    not `skt sync` — that pulls the unit's trunk, not the pin")
         elif note.get("kind") == "unit-error":
             # Same shape, and for the same reason — plus the home's own
             # recorded sentence, which names the remote, the branch and
@@ -1410,6 +1550,7 @@ def render_text(report: dict) -> str:
     if unverifiable:
         lines.append(f"  unverifiable (remote unreachable): {', '.join(unverifiable)}")
     lines += _ref_lines(stale_ref, ahead_of_remote)
+    lines += _pinned_lines(report)
     if report.get("hint"):
         lines.append(f"  hint: {report['hint']}")
     lines.append(_build_line(report))
@@ -1444,6 +1585,14 @@ def _artifact_lines(report: dict) -> list[str]:
     if kind in (None, "off", "no-cli"):
         return []
     return [f"  artifacts not checked ({kind}): {state.get('reason', '')}"]
+
+
+def _pinned_lines(report: dict) -> list[str]:
+    rows = report.get("pinned") or []
+    if not rows:
+        return []
+    names = ", ".join(f"{r['unit']}@{r['revision']}" for r in rows)
+    return [f"  pinned by {Path(rows[0]['manifest']).name} (nothing to pull): {names}"]
 
 
 def _ref_lines(stale_ref: list, ahead_of_remote: list) -> list[str]:

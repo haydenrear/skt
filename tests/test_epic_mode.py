@@ -102,6 +102,30 @@ def test_dirty_tree_refused(tmp_path, capsys):
     assert "not clean" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("env", [{"WT_DIRTY_OK": "1"}, {"SKILL_GATES": "off"}])
+def test_dirty_tree_proceeds_when_the_environment_allows_it(tmp_path, capsys, monkeypatch, env):
+    """#390: `WT_DIRTY_OK=1 skt ticket new --path` refused anyway.
+
+    The base is pinned from a commit, so the parent's uncommitted files
+    are never read; the override lib.sh honours is honoured here too, with
+    the same one warning line.
+    """
+    monkeypatch.delenv("WT_DIRTY_OK", raising=False)
+    monkeypatch.delenv("SKILL_GATES", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    repo = epic_repo(tmp_path)
+    (repo / "dirty.txt").write_text("x")
+    declared = tmp_path / "wt-8b-slug"
+    assert run_epic_new(repo, "8b-slug", declared, base="epic/slug") == 0
+    captured = capsys.readouterr()
+    assert "warning: working tree is not clean" in captured.err
+    assert "continuing: dirty-ok" in captured.err
+    assert declared.is_dir()
+    assert not (declared / "dirty.txt").exists(), "the parent's files were not carried"
+    assert (repo / "dirty.txt").read_text() == "x", "and the parent's were not touched"
+
+
 #: What `bootstrap-home.sh`'s `die` actually printed in skill-manager#264,
 #: reproduced against a real refusing shim on 2026-08-29. The diagnosis is
 #: the SECOND line and the last line is a sentence fragment, which is why
