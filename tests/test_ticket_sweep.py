@@ -667,16 +667,41 @@ def test_an_unknown_epic_is_refused_rather_than_silently_widened(tmp_path, capsy
     assert "git fetch origin" in out
 
 
-def test_no_target_branch_warns_that_containment_was_not_checked(tmp_path, capsys):
-    """A repo with no epic branch still sweeps — and says what it did not check."""
+def test_no_target_branch_warns_in_the_dry_run(tmp_path, capsys):
+    """A repo with no epic branch still plans — and says what it did not check."""
     repo = epic_repo(tmp_path, epic=False)
     path = add_worktree(repo, "X-1", base="main")
 
-    assert ticket_mod.run("sweep", None, start=repo["root"], yes=True) == 0
+    assert ticket_mod.run("sweep", None, start=repo["root"]) == 0
     out = capsys.readouterr().out
     assert "containment NOT checked" in out
     assert "no epic/target branch known" in out
-    assert not path.is_dir(), "the gap is reported, not treated as a blocker"
+    assert "would remove" in out
+    assert path.is_dir()
+
+
+def test_no_target_branch_refuses_to_remove(tmp_path, capsys):
+    """#390: announcing an unchecked safety property and deleting anyway.
+
+    `--yes` with no epic and no target used to remove every clean
+    worktree with containment never asked. It now refuses and names the
+    two flags that make the question askable.
+    """
+    repo = epic_repo(tmp_path, epic=False)
+    path = add_worktree(repo, "X-1", base="main")
+
+    assert ticket_mod.run("sweep", None, start=repo["root"], yes=True) == 1
+    out = capsys.readouterr().out
+    assert "no epic/target branch is known" in out
+    assert "nothing was removed" in out
+    assert "--epic <slug> or --target <ref>" in out
+    assert path.is_dir()
+    assert not repo["log"].exists(), "the home gate was never even asked"
+
+    assert ticket_mod.run(
+        "sweep", None, start=repo["root"], target="origin/main", yes=True
+    ) == 0
+    assert not path.is_dir(), "naming the target is all it takes"
 
 
 def test_a_repo_with_no_remote_reports_rather_than_enforces_pushed(tmp_path, capsys):
@@ -695,7 +720,7 @@ def test_a_repo_with_no_remote_reports_rather_than_enforces_pushed(tmp_path, cap
     git("worktree", "add", "-q", str(path), "-b", "feature/L-1", "main", cwd=root)
     (path / ".skill-manager" / "installed").mkdir(parents=True)
 
-    assert ticket_mod.run("sweep", None, start=root, yes=True) == 0
+    assert ticket_mod.run("sweep", None, start=root, target="main", yes=True) == 0
     out = capsys.readouterr().out
     assert "has no remote" in out
     assert not path.is_dir()

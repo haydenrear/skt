@@ -15,6 +15,7 @@ still standing here?" is how an operator finds out what is wrong.
 
 from __future__ import annotations
 
+import os
 import sys
 import tomllib
 from pathlib import Path
@@ -150,6 +151,32 @@ def _bootstrap_script() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def dirty_ok() -> bool:
+    """`WT_DIRTY_OK=1` or `SKILL_GATES=off`: a dirty parent tree is a note.
+
+    The spelling git-issue-workflow's lib.sh reads, so `skt ticket new`
+    honours the same environment on either route.
+    """
+    return os.environ.get("WT_DIRTY_OK") == "1" or os.environ.get("SKILL_GATES") == "off"
+
+
+def _stale_wrapper_hint(reason: str) -> str | None:
+    """A delegate that refused a dirty tree the environment allowed.
+
+    git-issue-workflow copies older than the WT_DIRTY_OK override ignore
+    it and print this refusal anyway. That is a stale unit in the home,
+    not the operator's mistake, and nothing else says so (#390).
+    """
+    if not dirty_ok() or "working tree is not clean" not in reason:
+        return None
+    home = homes.find_home(".")
+    where = f"{home}'s" if home is not None else "this home's"
+    return (
+        f"hint:  {where} {UNIT} predates WT_DIRTY_OK, which is set here and was "
+        f"ignored — skt sync {UNIT}, then re-run"
+    )
+
+
 def epic_new(ticket_id: str, base: str | None, path: str) -> int:
     """Create a DECLARED-path worktree the way an epic assignment requires.
 
@@ -168,9 +195,18 @@ def epic_new(ticket_id: str, base: str | None, path: str) -> int:
 
     dirty = git("status", "--porcelain")
     if dirty.stdout.strip():
-        print("error: working tree is not clean — an epic worktree pins its base from a clean slate")
-        print("fix:   commit or stash, then re-run")
-        return 1
+        if dirty_ok():
+            # The parent's uncommitted files are never read: the base is
+            # pinned from a named commit below. Same override, same line,
+            # as git-issue-workflow's lib.sh.
+            root = git("rev-parse", "--show-toplevel").stdout.strip() or os.getcwd()
+            print(f"warning: working tree is not clean: {root} (continuing: dirty-ok)",
+                  file=sys.stderr)
+        else:
+            print("error: working tree is not clean — an epic worktree pins its base from a clean slate")
+            print("fix:   commit or stash, then re-run — or WT_DIRTY_OK=1 to proceed; "
+                  "the base is pinned from a commit, so those files are never read")
+            return 1
     base_ref = base or "HEAD"
     # EXISTENCE IS CHECKED EXPLICITLY. `git rev-parse` echoes a full 40-char
     # hex string back and exits 0 WITHOUT looking for the object, so a missing
@@ -416,4 +452,7 @@ def run(
         print(f"error: {err.reason}")
         if err.fix:
             print(f"fix:   {err.fix}")
+        hint = _stale_wrapper_hint(err.reason)
+        if hint:
+            print(hint)
         return err.exit_code or 1

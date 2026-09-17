@@ -753,3 +753,83 @@ def test_agreeing_record_and_checkout_say_nothing():
     src = inspect.getsource(check_mod.collect)
     assert "head != unit.git_hash" in src, \
         "the check must fire on DIFFERENCE, not on presence"
+
+
+# --- #390: a project home tracks the repository's pin, not the trunk --------
+
+
+def _pin(repo: Path, alias: str, source: str, revision: str) -> None:
+    (repo / "skill-project.toml").write_text(
+        '[project]\nname = "demo"\n\n'
+        f'[skills.{alias}]\nsource = "{source}"\nrevision = "{revision}"\n'
+    )
+
+
+def test_a_unit_at_its_manifest_pin_is_pinned_not_stale(tmp_path):
+    """The measured case: `skt check` in the project home offered
+    `skt sync spec-double-compiler`, and taking it broke the repository."""
+    repo = make_repo(tmp_path / "repo")
+    bare, tip = make_unit_upstream(tmp_path, "alpha")
+    make_home(repo, units={"alpha": unit_record(bare, tip)})
+    advance_upstream(bare, tmp_path)
+    # The alias differs from the unit name; the source is what matches.
+    _pin(repo, "alpha_repo_alias", f"git+file://{bare}", tip)
+
+    report = check_mod.collect(repo, probe_artifacts=False, probe_cli=False,
+                               probe_migration=False)
+    assert report["tier"] == "project"
+    assert report["notifications"] == [], report["notifications"]
+    assert report["pinned"] == [
+        {"unit": "alpha", "revision": tip[:8], "manifest": str(repo / "skill-project.toml")}
+    ]
+    text = check_mod.render_text(report)
+    assert f"alpha@{tip[:8]}" in text and "pinned by skill-project.toml" in text
+    assert "skt sync alpha" not in text
+
+
+def test_a_unit_off_its_pin_says_restore_the_pin_not_sync(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    bare, tip = make_unit_upstream(tmp_path, "alpha")
+    new_tip = advance_upstream(bare, tmp_path)
+    make_home(repo, units={"alpha": unit_record(bare, new_tip)})
+    _pin(repo, "alpha", "github:x/alpha", tip)
+
+    report = check_mod.collect(repo, probe_artifacts=False, probe_cli=False,
+                               probe_migration=False)
+    kinds = [n["kind"] for n in report["notifications"]]
+    assert kinds == ["pin-drift"], report["notifications"]
+    note = report["notifications"][0]
+    assert note["pinned"] == tip[:8] and note["installed"] == new_tip[:8]
+    assert "project resolve --project-dir" in note["fix"]
+    text = check_mod.render_text(report)
+    assert "restore the pin with:" in text
+    assert "pull with: skt sync" not in text
+
+
+def test_the_root_home_ignores_pins_and_tracks_trunk(tmp_path, monkeypatch):
+    fake_root = tmp_path / "fake-root"
+    repo = make_repo(fake_root / "anywhere")
+    bare, tip = make_unit_upstream(tmp_path, "alpha")
+    home = make_home(fake_root, units={"alpha": unit_record(bare, tip)})
+    advance_upstream(bare, tmp_path)
+    _pin(repo, "alpha", "github:x/alpha", tip)
+    monkeypatch.setenv("SKILL_MANAGER_HOME", str(home))
+
+    report = check_mod.collect(repo, probe_artifacts=False, probe_cli=False,
+                               probe_migration=False)
+    assert report["tier"] == "root"
+    assert [n["kind"] for n in report["notifications"]] == ["new-version"]
+    assert report["pinned"] == []
+
+
+def test_source_spellings_normalize_to_one_repository():
+    same = {
+        check_mod._normalize_source(s)
+        for s in (
+            "github:haydenrear/tla-spec-dev",
+            "git+https://github.com/haydenrear/tla-spec-dev.git",
+            "https://github.com/haydenrear/tla-spec-dev",
+            "git@github.com:haydenrear/tla-spec-dev.git",
+        )
+    }
+    assert same == {"github.com/haydenrear/tla-spec-dev"}

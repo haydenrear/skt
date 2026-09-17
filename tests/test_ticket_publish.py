@@ -70,6 +70,40 @@ def test_ticket_new_prints_contract_and_home_warning(tmp_path, monkeypatch, caps
     assert "skt publish" in out  # the home warning
 
 
+def _refuse_dirty(t, b=None, **k):
+    raise FakeWtError(
+        "working tree is not clean: /r (commit or revert the files listed above)",
+        fix="git -C /r status --short",
+    )
+
+
+def test_ticket_new_names_a_stale_wrapper_that_ignored_wt_dirty_ok(
+    tmp_path, monkeypatch, capsys
+):
+    """#390: the home's older git-issue-workflow ignored WT_DIRTY_OK.
+
+    The refusal is the delegate's, so skt cannot honour the variable for
+    it — but it can say the copy is stale and how to refresh it.
+    """
+    fake_giw(monkeypatch, wt_new=_refuse_dirty)
+    monkeypatch.setenv("WT_DIRTY_OK", "1")
+    assert ticket_mod.run("new", "T-1") == 1
+    out = capsys.readouterr().out
+    assert "working tree is not clean" in out
+    assert "predates WT_DIRTY_OK" in out
+    assert "skt sync git-issue-workflow" in out
+
+
+def test_ticket_new_dirty_refusal_without_the_override_has_no_hint(
+    tmp_path, monkeypatch, capsys
+):
+    fake_giw(monkeypatch, wt_new=_refuse_dirty)
+    monkeypatch.delenv("WT_DIRTY_OK", raising=False)
+    monkeypatch.delenv("SKILL_GATES", raising=False)
+    assert ticket_mod.run("new", "T-1") == 1
+    assert "predates" not in capsys.readouterr().out
+
+
 def test_ticket_close_refused_renders_remedy(tmp_path, monkeypatch, capsys):
     def refuse(t, **k):
         raise FakeCloseRefused(
@@ -465,3 +499,72 @@ def test_publish_reports_the_unknown_unit_exit_distinctly(tmp_path, capsys):
     assert publish_mod.run("alpha", ticket="T-7", start=repo) == 12
     assert len(calls.read_text().splitlines()) == 1, "no whole-home retry"
     assert "no unit named 'alpha'" in capsys.readouterr().out
+
+
+def _published_on_another_remote_ref(tmp_path):
+    """A clean checkout on `feature`, whose upstream `origin/feature` is
+    behind HEAD, while HEAD itself is on `origin/main`. Then the remote
+    goes away, so no live tip can adjudicate."""
+    import shutil
+    import subprocess as sp
+
+    from test_check import GIT, make_unit_upstream, unit_record
+    from test_status import make_home, make_repo
+
+    fake_root = tmp_path / "fake-root"
+    make_repo(fake_root / "anywhere")
+    bare, tip = make_unit_upstream(tmp_path, "alpha")
+    home = make_home(fake_root, units={"alpha": unit_record(bare, tip)})
+    unit_dir = home / "skills" / "alpha"
+    sp.run(["git", "clone", "-q", str(bare), str(unit_dir)], check=True)
+    g = lambda *a: sp.run([*GIT, "-C", str(unit_dir), *a], check=True, capture_output=True)
+    g("checkout", "-q", "-b", "feature")
+    (unit_dir / "SKILL.md").write_text("# v2\n")
+    g("commit", "-q", "-am", "v2")
+    g("push", "-q", "-u", "origin", "feature")
+    (unit_dir / "SKILL.md").write_text("# v3\n")
+    g("commit", "-q", "-am", "v3")
+    g("push", "-q", "origin", "feature:main")
+    g("fetch", "-q", "origin")
+    head = sp.run(["git", "-C", str(unit_dir), "rev-parse", "HEAD"],
+                  capture_output=True, text=True, check=True).stdout.strip()
+    record = json.loads((home / "installed" / "alpha.json").read_text())
+    record["gitHash"] = head
+    (home / "installed" / "alpha.json").write_text(json.dumps(record))
+    shutil.move(str(bare), str(bare) + ".gone")
+    return home, unit_dir
+
+
+def test_a_clean_checkout_published_on_another_remote_ref_is_not_edited(tmp_path):
+    """Handoff observation 1 of #390: `skt ticket close` named a pristine
+    `skt` checkout — empty status, HEAD contained in origin/main — as an
+    edited unit. The stale branch upstream made it "ahead", and only a live
+    `ls-remote` could clear that; with the remote out of reach (or the
+    shared budget spent) it stayed "ahead". HEAD on ANY remote-tracking ref
+    is published, and that is answerable offline."""
+    import subprocess as sp
+
+    from skt import publish as publish_mod
+
+    home, unit_dir = _published_on_another_remote_ref(tmp_path)
+    assert sp.run(["git", "-C", str(unit_dir), "status", "--porcelain"],
+                  capture_output=True, text=True).stdout == ""
+    count = sp.run(["git", "-C", str(unit_dir), "rev-list", "--count", "@{upstream}..HEAD"],
+                   capture_output=True, text=True, check=True).stdout.strip()
+    assert int(count) == 1, "precondition: the branch upstream is behind HEAD"
+
+    assert publish_mod.edited_units(home) == []
+
+
+def test_unpublished_commit_on_top_still_reads_edited_offline(tmp_path):
+    import subprocess as sp
+
+    from skt import publish as publish_mod
+    from test_check import GIT
+
+    home, unit_dir = _published_on_another_remote_ref(tmp_path)
+    (unit_dir / "SKILL.md").write_text("# v4, local only\n")
+    sp.run([*GIT, "-C", str(unit_dir), "commit", "-q", "-am", "v4"], check=True)
+
+    edited = publish_mod.edited_units(home)
+    assert [(e["unit"], e["state"]) for e in edited] == [("alpha", "ahead")]

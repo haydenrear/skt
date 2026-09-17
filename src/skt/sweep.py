@@ -1042,6 +1042,22 @@ def sweep(
             )
         return result
 
+    if plan.target is None:
+        # A removal pass whose containment question was never asked is a
+        # removal pass with one safety property silently missing. The dry
+        # run above still lists and warns; the destructive run refuses
+        # until somebody names what "merged" means here (#390).
+        plan.error = (
+            "no epic/target branch is known, so whether each worktree's commits "
+            "landed anywhere cannot be checked; nothing was removed"
+        )
+        plan.fix = (
+            "re-run with --epic <slug> or --target <ref> "
+            "(e.g. --target origin/main)"
+        )
+        result.exit_code = EXIT_FAILED
+        return result
+
     if plan.destination is None or not plan.destination.is_dir():
         plan.error = f"the destination home does not exist at {plan.destination}"
         plan.fix = (
