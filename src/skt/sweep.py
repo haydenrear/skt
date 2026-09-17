@@ -842,33 +842,40 @@ class Plan:
 def _matches_epic(
     wt: Worktree, slug: str, epic_ref: str | None, tickets: set[str] | None, root: Path
 ) -> bool:
-    """Is this worktree part of epic `slug`?
+    """Is this worktree one of epic `slug`'s tickets?
 
-    Four answers, strongest first, because there is no single fact in git
-    that says "this worktree belongs to that epic":
+    There is no single fact in git that says "this worktree belongs to
+    that epic", so the answers are tried strongest first:
 
-    1. it IS the epic's own worktree (`epic/<slug>` checked out);
-    2. its ticket id is in the epic branch's shared ticket plan. That IS
-       the question, so when a plan can be read it is the whole answer
-       and nothing below widens it;
-    3. the slug appears in the branch name or the worktree directory
-       name — the epic workflow's declared worktree paths usually spell
-       it out;
-    4. the epic ref is an ancestor of the worktree's tip, i.e. it was
-       branched from the epic at or after the epic's current tip.
+    1. its ticket id is in the epic branch's shared ticket plan;
+    2. its tip is CONTAINED in the epic ref — the ticket's work landed on
+       the epic, which is the same test `--target` applies and the one
+       that says retiring it loses nothing git holds;
+    3. with no plan to consult: the slug appears in the branch name or
+       the worktree directory name, or the epic ref is an ancestor of
+       the tip (branched from the epic's current tip, not yet merged).
 
-    (4) is the weak one and is honest about it: a ticket branched from an
-    OLD epic tip that the epic has since moved past will not match, and a
-    repository whose epic branch has not yet diverged from `main` will
-    match everything. That is why `--epic` narrows only when it is passed
-    explicitly — a discovered slug sets the containment target and never
-    shrinks the candidate set, so an imprecise guess can only ever make
-    the sweep MORE careful, never less.
+    (2) is what #390 was missing. The fallback used to be only (3), and
+    its ancestry probe runs the other way: a ticket branched from an
+    OLD epic tip and merged back is not a descendant of the epic's
+    current tip, so on a finished epic with no plan every ticket was
+    excluded — and the only worktree left to "match" was the epic's own.
+    A plan miss does not veto (2): a ticket whose work is in the epic is
+    part of it whatever its branch is called.
+
+    The epic's own worktree is never a match; `build_plan` excludes it
+    before asking. `--epic` narrows only when passed explicitly — a
+    discovered slug sets the containment target and never shrinks the
+    candidate set.
     """
-    if wt.epic_slug == slug:
+    if tickets is not None and wt.ticket is not None and wt.ticket in tickets:
         return True
-    if tickets is not None and wt.ticket is not None:
-        return wt.ticket in tickets
+    if epic_ref is not None:
+        proc = _git("merge-base", "--is-ancestor", wt.rev, epic_ref, cwd=root)
+        if proc is not None and proc.returncode == 0:
+            return True
+    if tickets is not None:
+        return False
     needle = slug.lower()
     if needle in (wt.branch or "").lower() or needle in wt.path.name.lower():
         return True
@@ -929,6 +936,14 @@ def build_plan(
             excluded = (
                 "the worktree this command is running IN — run the sweep from the "
                 f"primary checkout instead: git -C {root} … / cd {root}"
+            )
+        elif epic and wt.epic_slug == epic:
+            # The worktree the operator runs the epic FROM. Its tip is the
+            # epic branch, so it is trivially "contained" — and an --epic
+            # sweep is how its tickets are retired, not the epic (#390).
+            excluded = (
+                f"the epic's own worktree — an --epic sweep retires epic {epic}'s "
+                "tickets, never the epic; remove it on its own once the epic is finalized"
             )
         elif epic and not _matches_epic(wt, epic, epic_ref, tickets, root):
             # Only an EXPLICIT --epic narrows. A DISCOVERED slug sets the
