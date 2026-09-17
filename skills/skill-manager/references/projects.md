@@ -393,6 +393,18 @@ skill-manager home close-out --home <worktree>/.skill-manager \
   the project home up to date (`skill-manager sync <unit>` there) when the
   worktree only pulled further, `unit publish` when the worktree committed
   something of its own.
+- **Published refs are not work** (skill-manager #390, #370). A remote-tracking
+  ref, or a local branch whose tip one of the home's remote-tracking refs
+  already contains (an inherited `skill/<ticket>-<unit>` publish branch), never
+  blocks, and a `git fetch` does not make a copy "locally modified". A stash,
+  a tag, or an unpublished branch still does.
+- **"the destination is ahead of this copy"** means the worktree's HEAD is an
+  ancestor of the project home's. Nothing in close-out, `home sync` or
+  `project resolve` replaces a checkout that is ahead, and the remedy is
+  `unit publish <unit>` for whatever only the worktree holds — **never a
+  `home sync` from the worktree**, which would move the project home backwards
+  (off the revision `skill-project.toml` pins). Run the printed
+  `unit publish` as written, then the close again; there is nothing to look up.
 - **That collapsing applies to the comparison path only.** A unit the
   destination does not hold at all comes back `status: new`, and its `files[]`
   is a raw walk — `.git`, `.git/index`, `.git/packed-refs`,
