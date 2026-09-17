@@ -603,6 +603,41 @@ def test_epic_scoping_limits_the_pass(tmp_path, capsys):
     assert in_epic.is_dir() and other.is_dir()
 
 
+def test_epic_scoping_selects_tickets_merged_into_a_finished_epic(tmp_path, capsys):
+    """#390: no plan, tickets branched from OLD epic tips and merged back.
+
+    None is a descendant of the epic's current tip and none spells the
+    slug, so the old fallback excluded every one — and selected only the
+    epic's own worktree, the one the operator was working in.
+    """
+    repo = epic_repo(tmp_path)
+    root = repo["root"]
+    tickets = [add_worktree(repo, t, commit=True, push=True) for t in ("229-attest", "230-share")]
+    epic_wt = root.parent / "wt-epic-demo"
+    git("worktree", "add", "-q", str(epic_wt), "epic/demo", cwd=root)
+    for ticket in ("229-attest", "230-share"):
+        git("merge", "-q", "--no-ff", "-m", f"merge {ticket}", f"feature/{ticket}", cwd=epic_wt)
+    (epic_wt / "finalize.txt").write_text("the epic moved on\n")
+    git("add", "-A", cwd=epic_wt)
+    git("commit", "-q", "-m", "finalize", cwd=epic_wt)
+    git("push", "-q", "origin", "epic/demo", cwd=epic_wt)
+    unrelated = add_worktree(repo, "X-1", base="main", commit=True, push=True)
+
+    assert ticket_mod.run("sweep", None, start=root, epic="demo") == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    for ticket in ("229-attest", "230-share"):
+        assert any("would remove" in l and ticket in l for l in lines), out
+    assert any("excluded" in l and "X-1" in l for l in lines), out
+    assert "the epic's own worktree" in out
+    assert not any("would remove" in l and "wt-epic-demo" in l for l in lines), out
+    assert "2 would be removed" in out, out
+
+    assert ticket_mod.run("sweep", None, start=root, epic="demo", yes=True) == 0
+    assert not any(t.is_dir() for t in tickets)
+    assert epic_wt.is_dir() and unrelated.is_dir()
+
+
 def test_epic_scoping_uses_the_ticket_plan_on_the_epic_branch(tmp_path, capsys):
     """The plan lives on `epic/demo`; the sweep runs from `main`.
 
